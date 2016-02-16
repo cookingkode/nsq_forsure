@@ -3,6 +3,7 @@ package nsqForSure
 import (
 	"bytes"
 	"encoding/gob"
+	"errors"
 	"github.com/garyburd/redigo/redis"
 	"github.com/nsqio/go-nsq"
 	"log"
@@ -16,6 +17,10 @@ type Producer struct {
 	sAddr     string
 	redisPool *redis.Pool
 }
+
+var (
+	taskAlreadyUnderProgressError = errors.New("Task already in progress")
+)
 
 func NewProducer(nsqdAddr string, redisAddr string) (*Producer, error) {
 
@@ -58,7 +63,7 @@ func (w *Producer) Publish(topic, key string, ttlMsec int64, body []byte) error 
 	resp, err := conn.Do("SET", key, "INPROGRESS", "nx", "px", ttlMsec)
 	if err != nil || resp != "OK" {
 		log.Printf("producer key set failure  %v %v", resp, err)
-		return err
+		return taskAlreadyUnderProgressError
 	}
 
 	//2. Encode

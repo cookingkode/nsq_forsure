@@ -9,13 +9,17 @@ import (
 )
 
 type Consumer struct {
-	consumerH *nsq.Consumer
-	handler   nsq.Handler
-	redisPool *redis.Pool
-	etaMsec   int
+	consumerH     *nsq.Consumer
+	handler       nsq.Handler
+	redisPool     *redis.Pool
+	etaMsec       int
+	resultTTLMsec int
 }
 
-func NewConsumer(topic string, channel string, redisAddress string, etaMsec int, concurrency int) (*Consumer, error) {
+// NewConsumer creates a new consumer. Arguments are similar to nsq.NewConsumer
+// etaMsec is how long is the task supposed to take in ms
+// resultTTLMsec is how long to store the status of the command, 0 is delete the key after finish
+func NewConsumer(topic string, channel string, redisAddress string, etaMsec int, resultTTLMsec int, concurrency int) (*Consumer, error) {
 
 	cCfg := nsq.NewConfig()
 	consumerH, err := nsq.NewConsumer(topic, channel, cCfg)
@@ -25,10 +29,11 @@ func NewConsumer(topic string, channel string, redisAddress string, etaMsec int,
 	}
 
 	consumer := &Consumer{
-		consumerH: consumerH,
-		redisPool: newPool(redisAddress, ""),
-		etaMsec:   etaMsec,
-		handler:   nil,
+		consumerH:     consumerH,
+		redisPool:     newPool(redisAddress, ""),
+		etaMsec:       etaMsec,
+		handler:       nil,
+		resultTTLMsec: resultTTLMsec,
 	}
 
 	consumerH.AddConcurrentHandlers(consumer, concurrency)
@@ -75,16 +80,21 @@ func (c *Consumer) HandleMessage(message *nsq.Message) error {
 	//3. Do actual work
 	if c.handler != nil {
 		message.Body = msg.Body // replace with contained msg
-		c.handler.HandleMessage(message)
+		err = c.handler.HandleMessage(message)
 	} else {
 		log.Printf("Nil Handler\n")
 	}
 	//4. FINISH WORK
-	resp, err = conn.Do("SET", msg.Key, "FINISH", "xx")
-	if err != nil || resp != "OK" {
-		log.Printf("consumer key set to finish failure  %v %v", resp, err)
+	if c.resultTTLMsec == 0 {
+		resp, err = conn.Do("DEL", msg.Key)
+	} else {
+		resp, err = conn.Do("SET", msg.Key, "FINISH", "xx", "px", c.resultTTLMsec)
+	}
+	if err != nil {
+		log.Printf("consumer key finish set failure  %v %v", resp, err)
 	}
 
+	// TODO return err
 	return nil
 
 }
